@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s /b *.py)",
+      "Bash(findstr /v \".venv\")",
+      "Bash(.venv\\\\Scripts\\\\python.exe full_data_to_csv.py)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe full_data_to_csv.py)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

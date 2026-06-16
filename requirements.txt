@@ -1,0 +1,9 @@
+requests
+protobuf
+websockets
+numpy
+pandas
+scipy
+Pillow
+PyQt6
+pyqtgraph

@@ -1,0 +1,9 @@
+*.db
+*.db-wal
+*.db-shm
+secrets.json
+accesstoken.json
+*.csv
+old/*
+complete.json
+*.log
