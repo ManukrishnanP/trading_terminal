@@ -241,55 +241,46 @@ std::vector<BacktestRun> BacktestDB::list_runs() {
     return out;
 }
 
-std::vector<double> BacktestDB::equity_x(int run_id) {
-    std::vector<double> out;
+std::vector<InstrumentEquity> BacktestDB::instrument_equity(int run_id) {
+    std::vector<InstrumentEquity> out;
     if (!handle) return out;
     const char* sql =
-        "SELECT timestamp FROM backtest_equity WHERE run_id=? ORDER BY id ASC";
+        "SELECT instrument_key, timestamp, equity "
+        "FROM backtest_equity WHERE run_id=? ORDER BY instrument_key, id ASC";
     sqlite3_stmt* s = nullptr;
     if (sqlite3_prepare_v2(handle, sql, -1, &s, nullptr) != SQLITE_OK) return out;
     sqlite3_bind_int(s, 1, run_id);
-    while (sqlite3_step(s) == SQLITE_ROW)
-        out.push_back(parse_iso(col_text(s, 0)));
+    std::string cur;
+    while (sqlite3_step(s) == SQLITE_ROW) {
+        std::string key = col_text(s, 0);
+        if (key != cur) { out.push_back({key, {}, {}}); cur = key; }
+        out.back().x.push_back(parse_iso(col_text(s, 1)));
+        out.back().y.push_back(sqlite3_column_double(s, 2));
+    }
     sqlite3_finalize(s);
     return out;
 }
 
-std::vector<double> BacktestDB::equity_y(int run_id) {
-    std::vector<double> out;
+std::vector<BacktestInstrumentStat> BacktestDB::instrument_stats(int run_id) {
+    std::vector<BacktestInstrumentStat> out;
     if (!handle) return out;
     const char* sql =
-        "SELECT equity FROM backtest_equity WHERE run_id=? ORDER BY id ASC";
-    sqlite3_stmt* s = nullptr;
-    if (sqlite3_prepare_v2(handle, sql, -1, &s, nullptr) != SQLITE_OK) return out;
-    sqlite3_bind_int(s, 1, run_id);
-    while (sqlite3_step(s) == SQLITE_ROW)
-        out.push_back(sqlite3_column_double(s, 0));
-    sqlite3_finalize(s);
-    return out;
-}
-
-std::vector<BacktestTrade> BacktestDB::trades(int run_id) {
-    std::vector<BacktestTrade> out;
-    if (!handle) return out;
-    const char* sql =
-        "SELECT instrument_key, direction, entry_time, entry_price, "
-        "       exit_time, exit_price, quantity, pnl "
-        "FROM backtest_trades WHERE run_id=? ORDER BY entry_time ASC";
+        "SELECT instrument_key, sharpe, max_drawdown_pct, n_trades, "
+        "       final_return_pct, win_rate_pct "
+        "FROM backtest_instrument_stats WHERE run_id=? "
+        "ORDER BY final_return_pct DESC";
     sqlite3_stmt* s = nullptr;
     if (sqlite3_prepare_v2(handle, sql, -1, &s, nullptr) != SQLITE_OK) return out;
     sqlite3_bind_int(s, 1, run_id);
     while (sqlite3_step(s) == SQLITE_ROW) {
-        BacktestTrade t;
-        t.instrument_key = col_text(s, 0);
-        t.direction      = col_text(s, 1);
-        t.entry_time     = col_text(s, 2);
-        t.entry_price    = sqlite3_column_double(s, 3);
-        t.exit_time      = col_text(s, 4);
-        t.exit_price     = sqlite3_column_double(s, 5);
-        t.quantity       = sqlite3_column_int(s, 6);
-        t.pnl            = sqlite3_column_double(s, 7);
-        out.push_back(t);
+        BacktestInstrumentStat st;
+        st.instrument_key    = col_text(s, 0);
+        st.sharpe            = sqlite3_column_double(s, 1);
+        st.max_drawdown_pct  = sqlite3_column_double(s, 2);
+        st.n_trades          = sqlite3_column_int(s, 3);
+        st.final_return_pct  = sqlite3_column_double(s, 4);
+        st.win_rate_pct      = sqlite3_column_double(s, 5);
+        out.push_back(st);
     }
     sqlite3_finalize(s);
     return out;

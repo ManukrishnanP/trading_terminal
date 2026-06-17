@@ -54,31 +54,34 @@ struct BacktestRun {
     int         run_id = 0;
     std::string strategy;
     std::string run_time;
-    std::string summary_json;   // raw JSON string from DB
+    std::string summary_json;
 };
 
-struct BacktestTrade {
+struct BacktestInstrumentStat {
     std::string instrument_key;
-    std::string direction;      // "LONG" or "SHORT"
-    std::string entry_time;
-    std::string exit_time;
-    double      entry_price = 0;
-    double      exit_price  = 0;
-    int         quantity    = 0;
-    double      pnl         = 0;
+    double      sharpe           = 0;
+    double      max_drawdown_pct = 0;
+    int         n_trades         = 0;
+    double      final_return_pct = 0;
+    double      win_rate_pct     = 0;
+};
+
+struct InstrumentEquity {
+    std::string         key;
+    std::vector<double> x;   // Unix epoch
+    std::vector<double> y;   // equity
 };
 
 struct BacktestDB {
     sqlite3* handle = nullptr;
 
-    bool open(const std::string& path);  // returns false + is silent if file absent
+    bool open(const std::string& path);
     void close();
     bool is_open() const { return handle != nullptr; }
 
-    std::vector<BacktestRun>   list_runs();
-    std::vector<double>        equity_x(int run_id);   // Unix epoch timestamps
-    std::vector<double>        equity_y(int run_id);
-    std::vector<BacktestTrade> trades(int run_id);
+    std::vector<BacktestRun>            list_runs();
+    std::vector<InstrumentEquity>       instrument_equity(int run_id);
+    std::vector<BacktestInstrumentStat> instrument_stats(int run_id);
 
 private:
     static double parse_iso(const std::string& ts);

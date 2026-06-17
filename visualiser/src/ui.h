@@ -123,15 +123,13 @@ struct ThemeSettings {
 // ─── Backtest panel state ────────────────────────────────────────────────────
 
 struct BacktestPanelState {
-    std::vector<BacktestRun>   runs;
-    int                        selected_run = -1;   // index into `runs`
+    std::vector<BacktestRun>            runs;
+    int                                 selected_run = -1;
 
-    // Loaded for selected_run
-    std::vector<double>        eq_x;   // Unix epoch timestamps
-    std::vector<double>        eq_y;   // equity values
-    std::vector<BacktestTrade> trades;
+    std::vector<InstrumentEquity>       inst_equity;   // top 5 instruments
+    std::vector<BacktestInstrumentStat> inst_stats;    // top 5%ile
 
-    bool runs_loaded = false;   // fetched at least once
+    bool runs_loaded = false;
 };
 
 // ─── Layout manager ─────────────────────────────────────────────────────────

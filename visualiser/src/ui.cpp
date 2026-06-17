@@ -285,11 +285,15 @@ static ParsedInstrument parse_instrument(const std::string& key, const std::stri
             p.expiry = tok[3] + " " + tok[4] + " " + tok[5];
     }
 
-    // Last-resort fallback: if we still have no underlying (instrument_names table
-    // was missing or the key format wasn't recognised), show the part after '|'.
+    // Last-resort fallback: prefer readable display name (from instrument_names);
+    // only fall back to the raw key fragment if no name was resolved.
     if (p.underlying.empty()) {
-        auto pos = key.find('|');
-        p.underlying = (pos != std::string::npos) ? key.substr(pos + 1) : key;
+        if (!p.display.empty() && p.display != key)
+            p.underlying = p.display;
+        else {
+            auto pos = key.find('|');
+            p.underlying = (pos != std::string::npos) ? key.substr(pos + 1) : key;
+        }
     }
 
     return p;
@@ -1352,36 +1356,29 @@ static void panel_backtest(AppState& state) {
     if (!state.panels.backtest) return;
 
     ImGui::Begin("Backtest Results", &state.panels.backtest);
-
     BacktestPanelState& bp = state.backtest_panel;
 
     // ── Toolbar ──────────────────────────────────────────────────────────────
     if (ImGui::Button("Refresh")) {
-        // Re-open in case the file appeared after startup
-        if (!state.bkdb.is_open())
-            state.bkdb.open(state.bkdb_path);
+        if (!state.bkdb.is_open()) state.bkdb.open(state.bkdb_path);
         bp.runs         = state.bkdb.list_runs();
         bp.runs_loaded  = true;
         bp.selected_run = -1;
-        bp.eq_x.clear(); bp.eq_y.clear(); bp.trades.clear();
+        bp.inst_equity.clear();
+        bp.inst_stats.clear();
     }
-
     if (!bp.runs_loaded) {
         bp.runs        = state.bkdb.list_runs();
         bp.runs_loaded = true;
     }
-
     if (!state.bkdb.is_open()) {
         ImGui::SameLine();
-        ImGui::TextDisabled("(backtest_results.db not found — run run_backtest.py first)");
-        ImGui::End();
-        return;
+        ImGui::TextDisabled("(backtest_results.db not found)");
+        ImGui::End(); return;
     }
-
     if (bp.runs.empty()) {
-        ImGui::TextDisabled("No backtest runs found.");
-        ImGui::End();
-        return;
+        ImGui::TextDisabled("No runs found.");
+        ImGui::End(); return;
     }
 
     // ── Run selector ─────────────────────────────────────────────────────────
@@ -1397,17 +1394,15 @@ static void panel_backtest(AppState& state) {
         bool sel = (i == bp.selected_run);
         if (ImGui::Selectable(label, sel)) {
             bp.selected_run = i;
-            bp.eq_x  = state.bkdb.equity_x(r.run_id);
-            bp.eq_y  = state.bkdb.equity_y(r.run_id);
-            bp.trades = state.bkdb.trades(r.run_id);
+            bp.inst_equity  = state.bkdb.instrument_equity(r.run_id);
+            bp.inst_stats   = state.bkdb.instrument_stats(r.run_id);
         }
     }
     ImGui::EndChild();
 
     if (bp.selected_run < 0 || bp.selected_run >= (int)bp.runs.size()) {
         ImGui::TextDisabled("Select a run above.");
-        ImGui::End();
-        return;
+        ImGui::End(); return;
     }
 
     const BacktestRun& run = bp.runs[bp.selected_run];
@@ -1418,69 +1413,68 @@ static void panel_backtest(AppState& state) {
         const std::string& j = run.summary_json;
         auto get = [&](const char* k) { return json_get(j, k); };
         ImGui::Columns(4, "##bt_summary", false);
-        ImGui::Text("Return:  %s%%",  get("total_return_pct").c_str());
+        ImGui::Text("Trades:     %s",      get("n_trades").c_str());
         ImGui::NextColumn();
-        ImGui::Text("Trades:  %s",    get("n_trades").c_str());
+        ImGui::Text("Win%%:      %s%%",    get("win_rate_pct").c_str());
         ImGui::NextColumn();
-        ImGui::Text("Win%%:   %s%%",  get("win_rate_pct").c_str());
+        ImGui::Text("Top5%% Win: %s%%",   get("win_rate_top5pct_pct").c_str());
         ImGui::NextColumn();
-        ImGui::Text("MaxDD:   %s%%",  get("max_drawdown_pct").c_str());
+        ImGui::Text("MaxDD:      %s%%",    get("max_drawdown_pct").c_str());
         ImGui::Columns(1);
-        ImGui::Text("Sharpe:  %s    Avg PnL: %s",
-                    get("sharpe").c_str(), get("avg_pnl").c_str());
     }
 
-    // ── Equity curve ──────────────────────────────────────────────────────────
-    ImGui::SeparatorText("Equity Curve");
-    float chart_h = 220.f;
-    if (ImPlot::BeginPlot("##bt_eq", {-1.f, chart_h})) {
+    // ── Top 5 instruments ────────────────────────────────────────────────────
+    ImGui::SeparatorText("Top 5 Instruments");
+    {
+        int top5 = std::min((int)bp.inst_stats.size(), 5);
+        for (int i = 0; i < top5; ++i) {
+            std::string name = display_name(bp.inst_stats[i].instrument_key, state);
+            if (i > 0) ImGui::SameLine(0.f, 20.f);
+            ImGui::Text("%d. %s (+%.2f%%)", i + 1, name.c_str(),
+                        bp.inst_stats[i].final_return_pct);
+        }
+    }
+
+    // ── Equity curves (top 5 instruments) ────────────────────────────────────
+    ImGui::SeparatorText("Equity Curve (Top 5)");
+    if (ImPlot::BeginPlot("##bt_eq", {-1.f, 220.f})) {
         ImPlot::SetupAxes("Time", "Equity");
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
-        if (!bp.eq_x.empty()) {
-            ImPlot::PlotLine("Equity", bp.eq_x.data(), bp.eq_y.data(),
-                             (int)bp.eq_x.size());
+        for (const auto& ie : bp.inst_equity) {
+            if (ie.x.empty()) continue;
+            std::string lbl = display_name(ie.key, state);
+            ImPlot::PlotLine(lbl.c_str(), ie.x.data(), ie.y.data(), (int)ie.x.size());
         }
         ImPlot::EndPlot();
     }
 
-    // ── Trade log ─────────────────────────────────────────────────────────────
-    ImGui::SeparatorText("Trades");
+    // ── Instrument table (top 5%ile) ─────────────────────────────────────────
+    ImGui::SeparatorText("Top 5%ile Instruments");
     float avail = ImGui::GetContentRegionAvail().y;
-    ImGui::BeginChild("##bt_trades", {0.f, avail}, false);
-    if (ImGui::BeginTable("##bt_trade_tbl", 7,
+    ImGui::BeginChild("##bt_stats", {0.f, avail}, false);
+    if (ImGui::BeginTable("##bt_stat_tbl", 5,
             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
             ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupScrollFreeze(0, 1);
-        ImGui::TableSetupColumn("Instrument", ImGuiTableColumnFlags_WidthStretch, 3.f);
-        ImGui::TableSetupColumn("Dir",        ImGuiTableColumnFlags_WidthFixed,  44.f);
-        ImGui::TableSetupColumn("Entry Time", ImGuiTableColumnFlags_WidthStretch, 2.f);
-        ImGui::TableSetupColumn("Entry",      ImGuiTableColumnFlags_WidthFixed,  70.f);
-        ImGui::TableSetupColumn("Exit Time",  ImGuiTableColumnFlags_WidthStretch, 2.f);
-        ImGui::TableSetupColumn("Exit",       ImGuiTableColumnFlags_WidthFixed,  70.f);
-        ImGui::TableSetupColumn("PnL",        ImGuiTableColumnFlags_WidthFixed,  80.f);
+        ImGui::TableSetupColumn("Instrument",  ImGuiTableColumnFlags_WidthStretch, 3.f);
+        ImGui::TableSetupColumn("Sharpe",      ImGuiTableColumnFlags_WidthFixed,  60.f);
+        ImGui::TableSetupColumn("MaxDD",       ImGuiTableColumnFlags_WidthFixed,  65.f);
+        ImGui::TableSetupColumn("Trades",      ImGuiTableColumnFlags_WidthFixed,  55.f);
+        ImGui::TableSetupColumn("Return",      ImGuiTableColumnFlags_WidthFixed,  70.f);
         ImGui::TableHeadersRow();
 
-        for (const auto& t : bp.trades) {
+        for (const auto& st : bp.inst_stats) {
             ImGui::TableNextRow();
-            // Instrument: strip exchange prefix for readability
-            auto p = t.instrument_key.find('|');
-            std::string inst = (p != std::string::npos)
-                               ? t.instrument_key.substr(p + 1) : t.instrument_key;
-            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(inst.c_str());
-            ImGui::TableSetColumnIndex(1);
-            if (t.direction == "LONG")
-                ImGui::TextColored({0.2f,0.9f,0.3f,1.f}, "LONG");
+            std::string name = display_name(st.instrument_key, state);
+            ImGui::TableSetColumnIndex(0); ImGui::TextUnformatted(name.c_str());
+            ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f",   st.sharpe);
+            ImGui::TableSetColumnIndex(2); ImGui::Text("%.2f%%", st.max_drawdown_pct);
+            ImGui::TableSetColumnIndex(3); ImGui::Text("%d",     st.n_trades);
+            ImGui::TableSetColumnIndex(4);
+            if (st.final_return_pct >= 0)
+                ImGui::TextColored({0.2f,0.9f,0.3f,1.f}, "+%.2f%%", st.final_return_pct);
             else
-                ImGui::TextColored({0.9f,0.2f,0.2f,1.f}, "SHORT");
-            ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(t.entry_time.c_str());
-            ImGui::TableSetColumnIndex(3); ImGui::Text("%.2f", t.entry_price);
-            ImGui::TableSetColumnIndex(4); ImGui::TextUnformatted(t.exit_time.c_str());
-            ImGui::TableSetColumnIndex(5); ImGui::Text("%.2f", t.exit_price);
-            ImGui::TableSetColumnIndex(6);
-            if (t.pnl >= 0)
-                ImGui::TextColored({0.2f,0.9f,0.3f,1.f}, "+%.2f", t.pnl);
-            else
-                ImGui::TextColored({0.9f,0.2f,0.2f,1.f}, "%.2f",  t.pnl);
+                ImGui::TextColored({0.9f,0.2f,0.2f,1.f}, "%.2f%%",  st.final_return_pct);
         }
         ImGui::EndTable();
     }

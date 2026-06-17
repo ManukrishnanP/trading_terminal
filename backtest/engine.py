@@ -1,6 +1,27 @@
 """
 Backtesting engine.
 
+Run a backtest
+--------------
+    python run_backtest.py \
+        --strategy strategies/example.py \
+        --db stock_data.db \
+        --date-from 2026-01-01 \
+        --date-to   2026-06-01 \
+        --capital   100000 \
+        --out       backtest_results.db
+
+Key flags:
+  --strategy      path to .py file containing a Strategy subclass
+  --db            market_data.db or stock_data.db
+  --date-from/to  YYYY-MM-DD inclusive range (omit for all data)
+  --capital       starting capital (default 100000)
+  --position-pct  % of capital per trade (default 20)
+  --brokerage     % per leg (default 0.03)
+  --slippage      % adverse slip per leg (default 0.01)
+  --workers       parallel workers; 1 = sequential (default: cpu count)
+  --out           output SQLite path (default backtest_results.db)
+
 Per-instrument flow
 -------------------
 1. Load all ticks from DB for the instrument (within date range).
@@ -384,6 +405,49 @@ def run(cfg: BacktestConfig) -> List[InstrumentResult]:
 
 
 # ── Summary stats ──────────────────────────────────────────────────────────────
+
+def compute_instrument_stats(result: InstrumentResult,
+                             initial_capital: float) -> "dict | None":
+    """Per-instrument metrics. Returns None if skipped or no trades."""
+    if result.skipped or not result.trades:
+        return None
+
+    trades = result.trades
+    n = len(trades)
+    wins = sum(1 for t in trades if t.pnl > 0)
+    pnls = [t.pnl for t in trades]
+    avg_pnl = sum(pnls) / n
+
+    if n > 1:
+        variance = sum((p - avg_pnl) ** 2 for p in pnls) / (n - 1)
+        std_p = math.sqrt(variance)
+        sharpe = (avg_pnl / std_p * math.sqrt(n)) if std_p > 0 else 0.0
+    else:
+        sharpe = 0.0
+
+    final_cap = result.equity[-1][1] if result.equity else initial_capital
+    final_return_pct = (final_cap - initial_capital) / initial_capital * 100.0
+
+    peak = initial_capital
+    max_dd = 0.0
+    for _, eq in result.equity:
+        if eq > peak:
+            peak = eq
+        if peak > 0:
+            dd = (peak - eq) / peak * 100.0
+            if dd > max_dd:
+                max_dd = dd
+
+    return {
+        "instrument_key":  result.instrument_key,
+        "sharpe":          round(sharpe, 4),
+        "max_drawdown_pct": round(max_dd, 4),
+        "n_trades":        n,
+        "n_wins":          wins,
+        "final_return_pct": round(final_return_pct, 4),
+        "win_rate_pct":    round(wins / n * 100.0, 2),
+    }
+
 
 def compute_summary(results: List[InstrumentResult],
                     initial_capital: float) -> dict:
